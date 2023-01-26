@@ -1,0 +1,278 @@
+---
+title: "Stat 2600 Final Project"
+output: md_document
+---
+
+Importing the data.
+https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=SPY&outputsize=full&datatype=csv&apikey=demo
+
+CBOE CSV downloads
+https://www.cboe.com/tradable_products/vix/vix_historical_data/
+https://www.cboe.com/us/options/market_statistics/historical_data/
+
+
+```{r setup, include=FALSE}
+library(readxl)
+library(dplyr)
+library(tidyverse)
+
+VIX_History_df <- read.csv("VIX_History.csv")
+
+#VIX_History_archive_df <- read_excel("vixarchive.xls")
+
+SPY_History_Daily_Volume_df <- read.csv("daily_volume_SPY_2007-01-01_2022-04-05.csv")
+
+SPY_History_Daily_df <- read.csv("daily_SPY.csv")
+
+```
+
+Checking that the data got imported correctly.
+
+```{r}
+print(tail(VIX_History_df)) #2003-present
+#print(head(VIX_History_archive_df)) #1990-2003
+
+print(tail(SPY_History_Daily_Volume_df)) #2007-present
+print(tail(SPY_History_Daily_df)) #1999-Present
+```
+
+Cleaning up the data frames.
+
+```{r}
+
+names(VIX_History_df) <- c("Date","VIX_Open","VIX_High","VIX_Low","VIX_Close")
+names(SPY_History_Daily_Volume_df) <-c("Date","Underlying","Product","Exchange","Option_Volume")
+names(SPY_History_Daily_df) <- c("Date", "SPY_Open", "SPY_High", "SPY_Low", "SPY_Close", "SPY_Volume")
+
+VIX_History_df$Date <- as.Date(VIX_History_df$Date,"%m/%d/%Y")
+
+SPY_History_Daily_df$Date <- as.Date(SPY_History_Daily_df$Date,"%Y-%m-%d")
+
+SPY_History_Daily_Volume_df$Date <- as.Date(SPY_History_Daily_Volume_df$Date,"%Y/%m/%d")
+
+SPY_History_Daily_Volume_df$Underlying <- NULL
+SPY_History_Daily_Volume_df$Product <- NULL
+SPY_History_Daily_Volume_df$Exchange <- NULL
+
+```
+
+Joining the data frames.
+```{r}
+
+joined_df <- SPY_History_Daily_Volume_df
+
+joined_df <- right_join(joined_df,VIX_History_df,by="Date")
+
+joined_df <- right_join(joined_df,SPY_History_Daily_df,by="Date")
+head(joined_df)
+```
+```{r}
+
+```
+
+
+Graph 1.
+```{r}
+library(ggplot2)
+
+joined_df %>% ggplot()+geom_bar(aes(x=Date,y=log(Option_Volume)),color="green",stat = "identity") + geom_line(aes(x=Date,y=SPY_Close)) + geom_line(aes(x=Date,y=VIX_Close),color="red") 
+```
+
+```{r}
+joined_df %>% ggplot()+geom_line(aes(x=Date,y=SPY_Open-SPY_Close),color="green") + geom_line(aes(x=Date,y=VIX_High),color="red") + theme(legend.position="right")
+```
+
+```{r}
+cor(x=joined_df$VIX_Close,y=(joined_df$SPY_High-joined_df$SPY_Low),use="complete.obs")
+
+openCloseVolatilityModel <- lm(VIX_Close ~ SPY_High + SPY_Low, data=joined_df)
+summary(openCloseVolatilityModel)
+```
+As expected here the correlation between the Open - Close of the SPY is very closely related with how the volatility index closes with a correlation of 0.59
+
+```{r}
+joined_df %>% ggplot() + geom_line(aes(x=Date,y=VIX_Close),color="green") + geom_line(aes(x=Date,
+  y=(
+  2.65166*joined_df[joined_df$Date == Date,"SPY_High"] + #Model as a line
+  -2.68447*joined_df[joined_df$Date == Date,"SPY_Low"] +
+  19.76211
+  )
+  ),color="red",alpha=0.5)
+```
+So here we can see the model graphed onto the actual value of the VIX at close while it isn't perfect and has some inconsistencies we can see the overall shape is similar to a degree. This correlation is somewhat obvious as large differences within the High and Low is one of the indications of volitality.
+
+```{r}
+joined_df %>% ggplot() + geom_line(aes(x=Date,y=VIX_Close),color="green") + geom_bar(aes(x=Date,y=(Option_Volume)/100000),fill="red",alpha=0.5,stat="identity")
+```
+While option volume has trended upwards the volume still has peaks during periods of high volatility looking at this graph  
+
+```{r}
+cor(x=joined_df$VIX_Close,y=joined_df$Option_Volume,use="complete.obs")
+
+cor(x=joined_df$VIX_High,y=joined_df$Option_Volume,use="complete.obs")
+```
+
+Here we can see a correlation between VIX_Close and and the Option_Volume with 0.277 although this value suggests correlation it is smaller than expected. The correlation between VIX_High and Option_Volume is a little higher at 0.291, but this is still lower than expected. This could be related to the upwards trending value of option volume increasing year over year.
+
+```{r}
+groupedYearOptionVolumeDF <- joined_df %>% group_by(format(Date,format="%Y")) %>% summarise(mean(Option_Volume))
+groupedYearOptionVolumeDF <- drop_na(groupedYearOptionVolumeDF)
+names(groupedYearOptionVolumeDF) <- c('year','meanVol')
+groupedYearOptionVolumeDF$year <- as.Date(groupedYearOptionVolumeDF$year,format = "%Y")
+head(groupedYearOptionVolumeDF)
+
+groupedYearOptionVolumeDF %>% ggplot(aes(x=year,y=meanVol)) + geom_col() + geom_smooth(method=lm,color="green",se=FALSE)
+```
+We can see here a slight upwards trend with stock option volume increasing year by year.
+
+```{r}
+yearedJoinedDF <- joined_df %>% mutate(Year=as.Date(format(Date,format="%Y"),format="%Y"))
+
+yearsIn <- unique(yearedJoinedDF$Year)
+opvCors <- vector(length=length(yearsIn))
+for(i in 1:length(yearsIn)) {
+  if(yearsIn[i] >= as.Date("2007-01-01")) {
+    filteredDFbyYear <- yearedJoinedDF %>% filter(Year==yearsIn[i])
+    opvCors[i] <- cor(x=filteredDFbyYear$VIX_High, y=filteredDFbyYear$Option_Volume,use="complete.obs")
+  }
+}
+opvCorsDF <- data.frame(yearsIn,opvCors)
+opvCorsDF
+```
+```{r}
+mean(opvCorsDF$opvCors)
+```
+Interestingly enough the correlation between the VIX_High and Option_Volume separated by years is actually lower than the correlation of all the data together. But something interesting happens here where certain years have a very high correlation while others don't. 
+
+
+```{r}
+recissionDF <-joined_df %>% group_by(format(Date,format="%Y")) %>% summarise((max(SPY_Open)-min(SPY_Close)),mean(VIX_Close,na.rm=TRUE))
+
+names(recissionDF) <- c("Date","MaxOpenMinClose","AvgVIXClose")
+recissionDF$Date <- as.Date(recissionDF$Date,format="%Y")
+recissionDF
+
+recissionDF %>% ggplot() + geom_line(aes(x=Date,y=MaxOpenMinClose))+ geom_point(aes(x=Date,y=MaxOpenMinClose)) + geom_line(aes(x=Date,y=AvgVIXClose),color="green") + scale_x_continuous(breaks=unique((recissionDF$Date))) + theme(axis.text.x = element_text(angle = 90))
+```
+Using this graph we can see periods of recession as the difference between the highest high and lowest low and the mean of the volitality align. So we can see the 2001, 2008, and the most recent 2020 recession. Since we only have data for option volume past 2007, so the 2008 and 2020 recessions are what we will focus on comparing option volume.
+
+```{r}
+
+recDF2 <- joined_df %>% filter(format(Date,"%Y") %in% c("2007","2008","2019","2020"))
+
+recDF3 <- joined_df %>% filter(format(Date,"%Y") %in% c("2008","2009","2020","2021"))
+
+cor(recDF2$VIX_High,recDF2$Option_Volume)
+
+cor(recDF3$VIX_High,recDF3$Option_Volume)
+```
+
+Looking at only periods of high volatility like recessions and the year right before them we get the highest correlation yet of 0.480. This is indicative of a strong relationship especially in the stock market where there is a huge amount of factors. On the other hand looking at years of recession and the year right after we see a significant drop in correlation with only 0.268.
+
+Knowing this correlation between option volume and the volatility index, and also knowing the correlation between the range of the SPY and the volatility index let's check the relation between the option volume and range of the SPY.
+
+```{r}
+cor(joined_df$SPY_High-joined_df$SPY_Low,lag(joined_df$Option_Volume),use="complete.obs")
+```
+
+This is a pretty good correlation between the range of the day 
+
+```{r}
+
+monthYearDF <- joined_df %>% mutate(Month=as.numeric(format(Date,format="%m"))) %>% mutate(Year=as.numeric(format(Date,format="%Y")))
+
+aggregatedOV <- aggregate(Option_Volume~Month+Year,data=monthYearDF,FUN=sum)
+aggregatedSPYHigh <- aggregate(SPY_High~Month+Year,data=monthYearDF,FUN=sum)
+aggregatedSPYLow <- aggregate(SPY_Low~Month+Year,data=monthYearDF,FUN=sum)
+
+aggregatedJoined <- full_join(aggregatedOV,aggregatedSPYHigh,by=c("Month","Year")) %>% full_join(aggregatedSPYLow,by=c("Month","Year"))
+head(aggregatedJoined)
+```
+
+```{r}
+aggregatedJoined <- aggregatedJoined %>% mutate(Date=as.Date(paste(as.character(Year),as.character(Month),"01",sep="-",format="%Y-%m-%d")))
+tail(aggregatedJoined)
+aggregatedJoined %>% ggplot() + geom_col(aes(x=Date,y=(Option_Volume)/100000),color="green")+ geom_line(aes(x=Date,y=SPY_High-SPY_Low),alpha=0.8)
+```
+Looking at the summed option volume mapped onto a similar scale as the difference in the sums of the high and sums of the low we can see an obvious correlation.
+
+```{r}
+cor(aggregatedJoined$Option_Volume,aggregatedJoined$SPY_High - aggregatedJoined$SPY_Low,use="complete.obs")
+
+cor(lag(aggregatedJoined$Option_Volume),aggregatedJoined$SPY_High - aggregatedJoined$SPY_Low,use="complete.obs")
+```
+
+As confirmed in the graph above we get the previous months option volume and the month afters difference in sums are very correlated with a correlation of 0.738.
+
+```{r}
+
+aggregatedJoined <- aggregatedJoined %>% mutate(lagOV = lag(Option_Volume))
+
+mmBools <- sample(c(TRUE,FALSE),replace=TRUE,prob=c(0.8,0.2))
+mmTrain <- aggregatedJoined[mmBools,]
+mmTest <- aggregatedJoined[!mmBools,]
+
+monthModel <- lm((SPY_High-SPY_Low) ~ lagOV,data=mmTrain)
+summary(monthModel)
+
+predMM <- predict(monthModel,newdata=mmTest)
+
+rmseMM <- sqrt(mean(((predMM)-(mmTest$SPY_High-mmTest$SPY_Low))^2,na.rm = TRUE))
+rmseMM
+```
+
+```{r}
+aggregatedJoined %>% ggplot() + geom_line(aes(x=Date,y=SPY_High-SPY_Low)) + geom_line(aes(
+  x=Date,
+  y=1.064e-05*lagOV + -3.632e+01
+),color="Purple",alpha=0.8)
+```
+
+```{r}
+dailyWithLag <- joined_df %>% mutate(lagOV = lag(Option_Volume)) %>% mutate(lagVIX = lag(VIX_Close))
+cor(dailyWithLag$SPY_High- dailyWithLag$SPY_Low,dailyWithLag$lagOV,use="complete.obs")
+```
+
+
+```{r}
+
+mmBools <- sample(c(TRUE,FALSE),replace=TRUE,prob=c(0.8,0.2))
+mmTrain <- dailyWithLag[mmBools,]
+mmTest <- dailyWithLag[!mmBools,]
+
+monthModel <- lm((SPY_High-SPY_Low) ~ lagOV,data=mmTrain)
+summary(monthModel)
+
+predMM <- predict(monthModel,newdata=mmTest)
+
+rmseMM <- sqrt(mean(((predMM)-(mmTest$SPY_High-mmTest$SPY_Low))^2,na.rm = TRUE))
+rmseMM
+```
+
+```{r}
+dailyWithLag %>% ggplot() + geom_line(aes(x=Date,y=SPY_High-SPY_Low)) + geom_line(aes(
+  x=Date,
+  y=(5.096e-07*lagOV + 2.634e+00)
+),color="Purple",alpha=0.8)
+```
+```{r}
+mmBools <- sample(c(TRUE,FALSE),replace=TRUE,prob=c(0.8,0.2))
+mmTrain <- dailyWithLag[mmBools,]
+mmTest <- dailyWithLag[!mmBools,]
+
+monthModel <- lm((SPY_High-SPY_Low) ~ lagOV+lagVIX,data=mmTrain)
+summary(monthModel)
+
+predMM <- predict(monthModel,newdata=mmTest)
+
+rmseMM <- sqrt(mean(((predMM)-(mmTest$SPY_High-mmTest$SPY_Low))^2,na.rm = TRUE))
+rmseMM
+```
+
+```{r}
+dailyWithLag %>% ggplot() + geom_line(aes(x=Date,y=SPY_High-SPY_Low)) + geom_line(aes(
+  x=Date,
+  y=lagOV*2.300e-06 + lagVIX * 1.625e-01 + -1.066e+00 
+),color="Purple",alpha=0.8)
+```
+
